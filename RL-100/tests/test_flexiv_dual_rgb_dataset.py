@@ -5,7 +5,7 @@ import pytest
 import zarr
 
 from rl_100.dataset.flexiv_dual_rgb_dataset import FlexivDualRGBDataset
-from rl_100.real_world.flexiv_dp30 import validate_zarr
+from rl_100.real_world.flexiv_dp30 import run_live, validate_zarr
 
 
 def _dataset(path, *, with_rewards=False):
@@ -96,3 +96,16 @@ def test_schema_validator_reports_bc_and_offline_readiness(tmp_path):
     assert report["frames"] == 24
     assert report["episodes"] == 2
     assert report["offline_rl_ready"] is True
+
+
+def test_live_execution_rejects_an_incorrect_confirmation_before_io():
+    with pytest.raises(ValueError, match="FLEXIV-RL100-EXECUTE"):
+        run_live(
+            checkpoint="/path/that/must/not/be-read.ckpt",
+            target="127.0.0.1:1",
+            device="cpu",
+            insecure_loopback=True,
+            execute=True,
+            confirmation="WRONG",
+            max_ticks=1,
+        )

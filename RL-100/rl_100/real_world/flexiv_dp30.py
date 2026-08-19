@@ -214,12 +214,12 @@ def run_live(
     replan_steps: int = 4,
     action_ttl_ms: float = 300.0,
 ) -> dict:
-    from policy_runtime_client import SyncPolicyActionClient, SyncPolicyProfileClient
-
     if execute and confirmation != EXECUTE_CONFIRMATION:
         raise ValueError(
             f"live execution requires --confirm {EXECUTE_CONFIRMATION}"
         )
+    from policy_runtime_client import SyncPolicyActionClient, SyncPolicyProfileClient
+
     policy, cfg, state_key = load_policy_checkpoint(checkpoint, device=device)
     n_obs_steps = int(cfg.n_obs_steps)
     client = SyncPolicyProfileClient(
