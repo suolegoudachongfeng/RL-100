@@ -34,16 +34,30 @@ from rl_100.common.checkpoint_util import TopKCheckpointManager
 from rl_100.common.pytorch_util import dict_apply, optimizer_to
 from rl_100.model.diffusion.ema_model import EMAModel
 from rl_100.model.common.lr_scheduler import get_scheduler
-from rl_100.unidpg.transition_model.configs import loaded_args
-from rl_100.unidpg.dynamics_eval_batch import dynamics_eval, train_dynamics
-from rl_100.unidpg.uni_ppo import BehaviorProximalPolicyOptimization
-from rl_100.unidpg.critic import IQL_Q_V_no, IQL_Q_V_online
-from rl_100.unidpg.critic import ValueLearner
-from rl_100.unidpg.net_online import ValueLearner_online
 from collections import deque
 from rl_100.model.common.cm_util import update_ema
 import glob
 OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+
+_RL_DEPENDENCIES_LOADED = False
+
+
+def _load_rl_dependencies():
+    """Import MuJoCo-dependent RL modules only when post-training is requested."""
+
+    global _RL_DEPENDENCIES_LOADED
+    global BehaviorProximalPolicyOptimization
+    global IQL_Q_V_no, IQL_Q_V_online, ValueLearner, ValueLearner_online
+    global train_dynamics
+    if _RL_DEPENDENCIES_LOADED:
+        return
+    from rl_100.unidpg.dynamics_eval_batch import train_dynamics
+    from rl_100.unidpg.uni_ppo import BehaviorProximalPolicyOptimization
+    from rl_100.unidpg.critic import IQL_Q_V_no, IQL_Q_V_online, ValueLearner
+    from rl_100.unidpg.net_online import ValueLearner_online
+
+    _RL_DEPENDENCIES_LOADED = True
 
 # Snapshot/restore RNG so the iql_ft branch consumes random state without
 # leaking it into the subsequent PPO update. Enabled by default.
@@ -165,24 +179,27 @@ class TrainDP3Workspace:
                 self.ema_model = copy.deepcopy(self.model)
             except Exception: # minkowski engine could not be copied. recreate it
                 self.ema_model = hydra.utils.instantiate(cfg.policy)
-        # unio4 for finetuning dp3
-        self.unio4 = BehaviorProximalPolicyOptimization(
-            policy=self.model,
-            device=torch.device(cfg.training.device),
-            policy_lr=cfg.unio4.bppo_lr,
-            clip_ratio=cfg.unio4.clip_ratio,
-            entropy_weight=cfg.unio4.entropy_weight,
-            decay=cfg.unio4.decay,
-            omega=cfg.unio4.omega,
-            batch_size=cfg.unio4.bppo_batch_size,
-            is_iql=cfg.critic.is_iql,
-            temperature=cfg.unio4.temperature,
-            ratio_strategy=cfg.unio4.ratio_strategy,
-            top_k=cfg.unio4.top_k,
-            num_inference_steps=cfg.policy.num_inference_steps,
-            fix_encoder=cfg.unio4.fix_encoder,
-            cfg=cfg,
-        )
+        # Pure BC must not import or construct MuJoCo-dependent RL components.
+        self.unio4 = None
+        if not cfg.only_bc:
+            _load_rl_dependencies()
+            self.unio4 = BehaviorProximalPolicyOptimization(
+                policy=self.model,
+                device=torch.device(cfg.training.device),
+                policy_lr=cfg.unio4.bppo_lr,
+                clip_ratio=cfg.unio4.clip_ratio,
+                entropy_weight=cfg.unio4.entropy_weight,
+                decay=cfg.unio4.decay,
+                omega=cfg.unio4.omega,
+                batch_size=cfg.unio4.bppo_batch_size,
+                is_iql=cfg.critic.is_iql,
+                temperature=cfg.unio4.temperature,
+                ratio_strategy=cfg.unio4.ratio_strategy,
+                top_k=cfg.unio4.top_k,
+                num_inference_steps=cfg.policy.num_inference_steps,
+                fix_encoder=cfg.unio4.fix_encoder,
+                cfg=cfg,
+            )
 
         # configure training state
         self.optimizer = hydra.utils.instantiate(
@@ -365,7 +382,8 @@ class TrainDP3Workspace:
                     f.write(f"{' ' * indent}{key:20} : {value}\n")
 
         os.makedirs(self.unio4_output_dir, exist_ok=True)
-        self.unio4.set_ratio_log_dir(os.path.join(self.unio4_output_dir, 'ratio_logs'))
+        if self.unio4 is not None:
+            self.unio4.set_ratio_log_dir(os.path.join(self.unio4_output_dir, 'ratio_logs'))
         config_path = os.path.join(self.unio4_output_dir, 'config.txt')
 
         with open(config_path, 'w') as f:
@@ -641,9 +659,12 @@ class TrainDP3Workspace:
                     if topk_ckpt_path is not None:
                         self.save_checkpoint(path=topk_ckpt_path)
                     if cfg.only_bc:
-                        self.unio4.set_policy(self.model); self.unio4.set_old_policy()
-                        os.makedirs(os.path.join(self.output_dir, 'bc'), exist_ok=True)
-                        self.unio4.save(os.path.join(self.output_dir, 'bc'))
+                        checkpoint_policy = (
+                            self.ema_model if cfg.training.use_ema else self.model
+                        )
+                        bc_dir = os.path.join(self.output_dir, 'bc')
+                        os.makedirs(bc_dir, exist_ok=True)
+                        checkpoint_policy.save(bc_dir)
                 # ========= eval end for this epoch ==========
                 policy.train()
 
