@@ -6,6 +6,9 @@
   <b>A unified library for diffusion / flow policy RL post-training, iterative offline data flywheels, and real-world robot RL.</b>
 </p>
 
+Flexiv 双臂、双 Inspire 手、三视角 RGB 的 30 Hz 数据接入、BC 训练与安全部署说明：
+[FLEXIV_DP30.zh-CN.md](FLEXIV_DP30.zh-CN.md)。
+
 <p align="center">
   <a href="https://arxiv.org/abs/2510.14830"><img src="https://img.shields.io/badge/Paper-arXiv%202510.14830-b31b1b?style=for-the-badge" alt="Paper"></a>
   <a href="https://lei-kun.github.io/RL-100/"><img src="https://img.shields.io/badge/Project-Page-2563eb?style=for-the-badge" alt="Project Page"></a>

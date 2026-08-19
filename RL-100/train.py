@@ -113,6 +113,11 @@ def init_wandb_run(cfg, output_dir):
         )
         return _wandb_init(retry_init_timeout)
 
+
+class _NoOpRun:
+    def log(self, *args, **kwargs):
+        return None
+
 class TrainDP3Workspace:
     include_keys = ['global_step', 'epoch']
     exclude_keys = tuple()
@@ -440,6 +445,7 @@ class TrainDP3Workspace:
         self.env_runner = env_runner
         if env_runner is not None:
             assert isinstance(env_runner, BaseRunner)
+        wandb_run = _NoOpRun()
         if self.cfg.use_wandb:
             cfg.logging.name = str(cfg.logging.name)
             cprint("-----------------------------", "yellow")
@@ -651,6 +657,18 @@ class TrainDP3Workspace:
         self.offline_best_path = self.get_global_best_dir()
         self.offline_last_path = os.path.join(self.output_dir, 'last')
         # =============================== stage 1-1: end diffusion training ===============================
+        if cfg.only_bc:
+            self.save_checkpoint(tag='latest')
+            policy = self.ema_model if cfg.training.use_ema else self.model
+            final_dir = os.path.join(self.output_dir, 'bc_final')
+            os.makedirs(final_dir, exist_ok=True)
+            policy.save(final_dir)
+            cprint(
+                f'only_bc=True: BC finished; skipped critic, dynamics and RL stages. '
+                f'Final checkpoint: {self.get_checkpoint_path(tag="latest")}',
+                'green',
+            )
+            return
         if self.cfg.distill_phase == 'after_dp':
             self.distill2cm(train_dataloader, val_dataloader, wandb_run, env_runner, phase=self.cfg.distill_phase)
         # =============================== stage 1-3: set for critic and dynamics training ===============================
