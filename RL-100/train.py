@@ -27,7 +27,6 @@ import time
 import threading
 import fcntl
 from hydra.core.hydra_config import HydraConfig
-from rl_100.policy.rl100_3d import RL1003D
 from rl_100.dataset.base_dataset import BaseDataset
 from rl_100.env_runner.base_runner import BaseRunner
 from rl_100.common.checkpoint_util import TopKCheckpointManager
@@ -163,7 +162,7 @@ class TrainDP3Workspace:
         # self.output_dir = self.output_dir()
         self.device = cfg.training.device
         # configure model
-        self.model: RL1003D = hydra.utils.instantiate(cfg.policy)
+        self.model = hydra.utils.instantiate(cfg.policy)
 
         # load pretrained 2D encoder if configured
         if getattr(cfg, 'use_pretrained_2DEncoder', False):
@@ -173,7 +172,7 @@ class TrainDP3Workspace:
                     self.get_pretrained_model_path(cfg.policy.stage1_model_name), device=self.device)
                 self.model.obs_encoder.switch_to_RL_stages()
 
-        self.ema_model: RL1003D = None
+        self.ema_model = None
         if cfg.training.use_ema:
             try:
                 self.ema_model = copy.deepcopy(self.model)

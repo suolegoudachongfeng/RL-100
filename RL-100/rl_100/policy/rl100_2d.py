@@ -10,7 +10,6 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from termcolor import cprint
 import copy
 import time
-import pytorch3d.ops as torch3d_ops
 from copy import deepcopy
 from rl_100.unidpg.critic import IQL_Q_V_no
 from rl_100.model.common.normalizer import LinearNormalizer
