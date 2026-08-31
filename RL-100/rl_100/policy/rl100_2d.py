@@ -11,7 +11,6 @@ from termcolor import cprint
 import copy
 import time
 from copy import deepcopy
-from rl_100.unidpg.critic import IQL_Q_V_no
 from rl_100.model.common.normalizer import LinearNormalizer
 from rl_100.policy.base_policy import BasePolicy
 from rl_100.model.diffusion.conditional_unet1d import ConditionalUnet1D
@@ -357,6 +356,8 @@ class RL1002D(BasePolicy):
             action_embed_layer_norm=False,
             action_scale_norm: bool = False,
             ):
+        from rl_100.unidpg.critic import IQL_Q_V_no
+
         self.is_iql = is_iql
         if self.joint_opt_encoder:
             critic_obs_encoder = self.obs_encoder
