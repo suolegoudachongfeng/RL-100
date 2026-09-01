@@ -19,6 +19,23 @@ import zarr
 SCHEMA_ID = "flexiv_rl100_dp_rgb_v1"
 PROFILE_ID = "joint_proprio_cartesian_v1"
 IMAGE_KEYS = ("rgb_head", "rgb_left_wrist", "rgb_right_wrist")
+RIGHT_PROFILE_ID = "right_joint_proprio_cartesian_v1"
+CONTRACTS = {
+    PROFILE_ID: {
+        "schema_id": SCHEMA_ID,
+        "state_dim": 26,
+        "action_dim": 24,
+        "image_keys": IMAGE_KEYS,
+        "hand_slice": slice(12, 24),
+    },
+    RIGHT_PROFILE_ID: {
+        "schema_id": "flexiv_rl100_right_dp_rgb_v1",
+        "state_dim": 13,
+        "action_dim": 12,
+        "image_keys": ("rgb_head", "rgb_right_wrist"),
+        "hand_slice": slice(6, 12),
+    },
+}
 LIVE_IMAGE_KEYS = {
     "rgb_head": "observation.images.head_image",
     "rgb_left_wrist": "observation.images.left_wrist_image",
@@ -27,21 +44,36 @@ LIVE_IMAGE_KEYS = {
 EXECUTE_CONFIRMATION = "FLEXIV-RL100-EXECUTE"
 
 
+def _contract(profile_id: str) -> dict:
+    try:
+        return CONTRACTS[str(profile_id)]
+    except KeyError as exc:
+        raise ValueError(f"unsupported Flexiv RL-100 profile: {profile_id}") from exc
+
+
+def _checkpoint_profile(cfg) -> str:
+    task = cfg.get("task", {})
+    return str(task.get("profile", PROFILE_ID))
+
+
 def validate_zarr(path: str | Path, *, require_offline_rl: bool = False) -> dict:
     source = Path(path).expanduser().resolve(strict=True)
     root = zarr.open(str(source), mode="r")
     errors: list[str] = []
-    if str(root.attrs.get("schema_id", "")) != SCHEMA_ID:
-        errors.append(f"schema_id must be {SCHEMA_ID}")
-    if str(root.attrs.get("profile", "")) != PROFILE_ID:
-        errors.append(f"profile must be {PROFILE_ID}")
+    profile_id = str(root.attrs.get("profile", ""))
+    contract = _contract(profile_id)
+    if str(root.attrs.get("schema_id", "")) != contract["schema_id"]:
+        errors.append(f"schema_id must be {contract['schema_id']}")
     if float(root.attrs.get("fps", 0.0)) != 30.0:
         errors.append("fps must be 30")
-    expected_shapes = {"state": (26,), "action": (24,)}
+    expected_shapes = {
+        "state": (contract["state_dim"],),
+        "action": (contract["action_dim"],),
+    }
     for key, tail in expected_shapes.items():
         if f"data/{key}" not in root or root[f"data/{key}"].shape[1:] != tail:
             errors.append(f"data/{key} must have shape [N,{tail[0]}]")
-    for key in IMAGE_KEYS:
+    for key in contract["image_keys"]:
         if f"data/{key}" not in root:
             errors.append(f"data/{key} is missing")
             continue
@@ -70,9 +102,13 @@ def validate_zarr(path: str | Path, *, require_offline_rl: bool = False) -> dict
         "frames": int(root["data/state"].shape[0]),
         "episodes": int(len(episode_ends)),
         "fps": 30.0,
-        "state_dimension": 26,
-        "action_dimension": 24,
-        "image_shapes": {key: list(root[f"data/{key}"].shape[1:]) for key in IMAGE_KEYS},
+        "profile": profile_id,
+        "state_dimension": contract["state_dim"],
+        "action_dimension": contract["action_dim"],
+        "image_shapes": {
+            key: list(root[f"data/{key}"].shape[1:])
+            for key in contract["image_keys"]
+        },
         "offline_rl_ready": offline_ready,
     }
 
@@ -102,21 +138,24 @@ def load_policy_checkpoint(
     return policy, cfg, state_key
 
 
-def _zarr_frame(root, index: int) -> dict[str, np.ndarray]:
+def _zarr_frame(root, index: int, *, image_keys: Sequence[str]) -> dict[str, np.ndarray]:
     return {
         "state": np.asarray(root["data/state"][index], dtype=np.float32),
         **{
             key: np.asarray(root[f"data/{key}"][index], dtype=np.float32)
-            for key in IMAGE_KEYS
+            for key in image_keys
         },
     }
 
 
-def _live_frame(frame: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
+def _live_frame(
+    frame: Mapping[str, np.ndarray], *, image_keys: Sequence[str]
+) -> dict[str, np.ndarray]:
     result = {
         "state": np.asarray(frame["observation.state"], dtype=np.float32),
     }
-    for target, source in LIVE_IMAGE_KEYS.items():
+    for target in image_keys:
+        source = LIVE_IMAGE_KEYS[target]
         image = np.asarray(frame[source])
         if image.ndim != 3 or image.shape[2] != 3:
             raise ValueError(f"live {source} must be HWC RGB")
@@ -127,7 +166,7 @@ def _live_frame(frame: Mapping[str, np.ndarray]) -> dict[str, np.ndarray]:
 
 
 def _model_observation(
-    history: Sequence[Mapping[str, np.ndarray]], *, device: str
+    history: Sequence[Mapping[str, np.ndarray]], *, device: str, image_keys: Sequence[str]
 ) -> dict[str, torch.Tensor]:
     return {
         "agent_pos": torch.from_numpy(
@@ -137,7 +176,7 @@ def _model_observation(
             key: torch.from_numpy(np.stack([item[key] for item in history]))
             .unsqueeze(0)
             .to(device)
-            for key in IMAGE_KEYS
+            for key in image_keys
         },
     }
 
@@ -148,15 +187,24 @@ def infer_action_chunk(
     history: Sequence[Mapping[str, np.ndarray]],
     *,
     device: str,
+    profile_id: str = PROFILE_ID,
     deterministic: bool = True,
 ) -> np.ndarray:
+    contract = _contract(profile_id)
     result = policy.predict_action(
-        _model_observation(history, device=device), deterministic=deterministic
+        _model_observation(
+            history, device=device, image_keys=contract["image_keys"]
+        ),
+        deterministic=deterministic,
     )
     action = result["action"][0].detach().cpu().numpy().astype(np.float32)
-    if action.ndim != 2 or action.shape[1] != 24 or not np.all(np.isfinite(action)):
+    if (
+        action.ndim != 2
+        or action.shape[1] != contract["action_dim"]
+        or not np.all(np.isfinite(action))
+    ):
         raise ValueError(f"policy returned invalid action chunk shape {action.shape}")
-    hands = action[:, 12:24]
+    hands = action[:, contract["hand_slice"]]
     if np.any(hands < 0.0) or np.any(hands > 1.0):
         raise ValueError("policy hand targets left the trained [0,1] domain")
     return action
@@ -171,22 +219,31 @@ def replay_checkpoint(
     use_ema: bool = True,
 ) -> dict:
     summary = validate_zarr(zarr_path)
+    profile_id = summary["profile"]
+    contract = _contract(profile_id)
     root = zarr.open(str(Path(zarr_path).expanduser()), mode="r")
     policy, cfg, state_key = load_policy_checkpoint(
         checkpoint, device=device, use_ema=use_ema
     )
+    checkpoint_profile = _checkpoint_profile(cfg)
+    if checkpoint_profile != profile_id:
+        raise ValueError(
+            f"checkpoint profile {checkpoint_profile} does not match dataset {profile_id}"
+        )
     n_obs_steps = int(cfg.n_obs_steps)
     history: deque[dict[str, np.ndarray]] = deque(maxlen=n_obs_steps)
     errors = []
     evaluated = 0
     count = min(summary["frames"], max(1, int(max_steps)))
     for index in range(count):
-        frame = _zarr_frame(root, index)
+        frame = _zarr_frame(root, index, image_keys=contract["image_keys"])
         if not history:
             for _ in range(n_obs_steps - 1):
                 history.append(frame)
         history.append(frame)
-        prediction = infer_action_chunk(policy, history, device=device)
+        prediction = infer_action_chunk(
+            policy, history, device=device, profile_id=profile_id
+        )
         target = np.asarray(root["data/action"][index], dtype=np.float32)
         errors.append(float(np.mean((prediction[0] - target) ** 2)))
         evaluated += 1
@@ -221,10 +278,17 @@ def run_live(
     from policy_runtime_client import SyncPolicyActionClient, SyncPolicyProfileClient
 
     policy, cfg, state_key = load_policy_checkpoint(checkpoint, device=device)
+    profile_id = _checkpoint_profile(cfg)
+    contract = _contract(profile_id)
+    if int(policy.action_dim) != contract["action_dim"]:
+        raise ValueError(
+            f"checkpoint action dimension {policy.action_dim} does not match "
+            f"profile {profile_id} ({contract['action_dim']})"
+        )
     n_obs_steps = int(cfg.n_obs_steps)
     client = SyncPolicyProfileClient(
         target=target,
-        profile_id=PROFILE_ID,
+        profile_id=profile_id,
         insecure_loopback=insecure_loopback,
         server_ca=server_ca or None,
         client_cert=client_cert or None,
@@ -253,13 +317,17 @@ def run_live(
     tick = 0
     try:
         while max_ticks <= 0 or tick < max_ticks:
-            current = _live_frame(client.get_frame())
+            current = _live_frame(
+                client.get_frame(), image_keys=contract["image_keys"]
+            )
             if not history:
                 for _ in range(n_obs_steps - 1):
                     history.append(current)
             history.append(current)
             if tick % max(1, int(replan_steps)) == 0:
-                actions = infer_action_chunk(policy, history, device=device)
+                actions = infer_action_chunk(
+                    policy, history, device=device, profile_id=profile_id
+                )
                 inferred += 1
                 if action_client is not None:
                     max_points = min(
@@ -284,6 +352,7 @@ def run_live(
         "inference_calls": inferred,
         "sent_chunks": sent_chunks,
         "checkpoint_state": state_key,
+        "profile": profile_id,
     }
 
 

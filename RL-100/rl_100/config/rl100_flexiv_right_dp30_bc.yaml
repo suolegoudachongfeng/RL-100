@@ -1,0 +1,80 @@
+defaults:
+  - rl100_2d_epsilon
+  - override /task: flexiv_right_rgb
+  - _self_
+
+name: rl100_flexiv_right_dp30_bc
+exp_name: flexiv-right-rgb-dp30-bc
+
+horizon: 9
+n_obs_steps: 2
+n_action_steps: 8
+env_num: 1
+
+feature_type: '2D'
+with_pointcloud: false
+use_agent_pos: true
+only_bc: true
+offline: false
+online: false
+use_wandb: false
+distill_phase: null
+chunk_as_single_action: true
+use_recon: false
+use_vib: false
+kl_annealing: false
+
+policy:
+  _target_: rl_100.policy.rl100_2d.RL1002D
+  scheduler_type: ddim
+  model: dp3
+  w_pc: false
+  use_visual: true
+  use_aug: false
+  ddim_inference_steps: 10
+  img_shape: [3, 224, 224]
+
+encoders:
+  resnet:
+    resize_shape: [224, 224]
+    crop_shape: null
+    random_crop: false
+    share_rgb_model: true
+    imagenet_norm: true
+    rgb_model:
+      _target_: rl_100.model.vision.model_getter.get_resnet
+      name: resnet18
+      weights: null
+
+dataloader:
+  batch_size: 16
+  num_workers: 4
+  shuffle: true
+  pin_memory: true
+  persistent_workers: true
+
+val_dataloader:
+  batch_size: 16
+  num_workers: 2
+  shuffle: false
+  pin_memory: true
+  persistent_workers: false
+
+training:
+  device: cuda:0
+  resume: false
+  num_epochs: 100
+  lr_warmup_steps: 500
+  rollout_every: 1000000
+  checkpoint_every: 10
+  val_every: 1
+  sample_every: 5
+
+checkpoint:
+  save_ckpt: true
+  save_last_ckpt: true
+  save_last_snapshot: false
+
+hydra:
+  run:
+    dir: data/outputs/flexiv_right_rgb_dp30/${now:%Y.%m.%d}/${now:%H.%M.%S}

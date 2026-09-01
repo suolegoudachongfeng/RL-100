@@ -1,0 +1,34 @@
+name: flexiv_right_rgb_dp30
+task_name: flexiv_right_rgb_dp30
+profile: right_joint_proprio_cartesian_v1
+crop_shape: null
+
+shape_meta:
+  obs:
+    rgb_head:
+      shape: [3, 240, 424]
+      type: rgb
+    rgb_right_wrist:
+      shape: [3, 240, 424]
+      type: rgb
+    agent_pos:
+      shape: [13]
+      type: low_dim
+  action:
+    shape: [12]
+
+env_runner: null
+
+dataset:
+  _target_: rl_100.dataset.flexiv_dual_rgb_dataset.FlexivDualRGBDataset
+  profile: ${task.profile}
+  zarr_path: data/flexiv_right_rgb_dp30.zarr
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  seed: ${training.seed}
+  val_ratio: 0.02
+  max_train_episodes: null
+  sequence_stride: 1
+  load_to_memory: false
+  return_transitions: false

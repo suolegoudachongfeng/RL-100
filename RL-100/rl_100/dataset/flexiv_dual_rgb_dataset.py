@@ -19,11 +19,19 @@ from rl_100.model.common.normalizer import LinearNormalizer
 
 SCHEMA_ID = "flexiv_rl100_dp_rgb_v1"
 IMAGE_KEYS = ("rgb_head", "rgb_left_wrist", "rgb_right_wrist")
-CORE_KEYS = ("state", "action", *IMAGE_KEYS)
+PROFILE_CONTRACTS = {
+    "joint_proprio_cartesian_v1": (SCHEMA_ID, 26, 24, IMAGE_KEYS),
+    "right_joint_proprio_cartesian_v1": (
+        "flexiv_rl100_right_dp_rgb_v1",
+        13,
+        12,
+        ("rgb_head", "rgb_right_wrist"),
+    ),
+}
 
 
 class FlexivDualRGBDataset(BaseDataset):
-    """Lazy Zarr dataset with an exact 26D state and 24D action contract."""
+    """Lazy Zarr dataset for the registered dual- or right-arm RGB contract."""
 
     def __init__(
         self,
@@ -37,13 +45,22 @@ class FlexivDualRGBDataset(BaseDataset):
         sequence_stride=1,
         load_to_memory=False,
         return_transitions=False,
+        profile="joint_proprio_cartesian_v1",
     ):
         super().__init__()
+        try:
+            self.schema_id, self.state_dim, self.action_dim, self.image_keys = (
+                PROFILE_CONTRACTS[str(profile)]
+            )
+        except KeyError as exc:
+            raise ValueError(f"unsupported Flexiv dataset profile: {profile}") from exc
+        self.profile = str(profile)
+        self.core_keys = ("state", "action", *self.image_keys)
         self.zarr_path = str(Path(zarr_path).expanduser())
         source = zarr.open(self.zarr_path, mode="r")
         self._validate_source(source, return_transitions=return_transitions)
 
-        keys = list(CORE_KEYS)
+        keys = list(self.core_keys)
         if return_transitions:
             keys.extend(("reward", "done", "return"))
         self.replay_buffer = (
@@ -73,26 +90,25 @@ class FlexivDualRGBDataset(BaseDataset):
         if len(self.sampler) == 0:
             raise ValueError("Flexiv RL-100 dataset contains no trainable sequences")
 
-    @staticmethod
-    def _validate_source(root, *, return_transitions: bool) -> None:
-        if str(root.attrs.get("schema_id", "")) != SCHEMA_ID:
-            raise ValueError(f"expected Zarr schema_id={SCHEMA_ID}")
-        if str(root.attrs.get("profile", "")) != "joint_proprio_cartesian_v1":
-            raise ValueError("expected joint_proprio_cartesian_v1 profile")
+    def _validate_source(self, root, *, return_transitions: bool) -> None:
+        if str(root.attrs.get("schema_id", "")) != self.schema_id:
+            raise ValueError(f"expected Zarr schema_id={self.schema_id}")
+        if str(root.attrs.get("profile", "")) != self.profile:
+            raise ValueError(f"expected {self.profile} profile")
         if float(root.attrs.get("fps", 0.0)) != 30.0:
             raise ValueError("Flexiv DP dataset must use a 30 Hz timeline")
         if str(root.attrs.get("image_layout", "")) != "CHW":
             raise ValueError("Flexiv DP images must use CHW layout")
         if "data" not in root or "meta/episode_ends" not in root:
             raise ValueError("Zarr must contain data and meta/episode_ends")
-        missing = [key for key in CORE_KEYS if f"data/{key}" not in root]
+        missing = [key for key in self.core_keys if f"data/{key}" not in root]
         if missing:
             raise ValueError(f"Zarr is missing required arrays: {missing}")
-        if root["data/state"].shape[1:] != (26,):
-            raise ValueError("state must have shape [N,26]")
-        if root["data/action"].shape[1:] != (24,):
-            raise ValueError("action must have shape [N,24]")
-        for key in IMAGE_KEYS:
+        if root["data/state"].shape[1:] != (self.state_dim,):
+            raise ValueError(f"state must have shape [N,{self.state_dim}]")
+        if root["data/action"].shape[1:] != (self.action_dim,):
+            raise ValueError(f"action must have shape [N,{self.action_dim}]")
+        for key in self.image_keys:
             shape = root[f"data/{key}"].shape
             if len(shape) != 4 or shape[1] != 3:
                 raise ValueError(f"{key} must have shape [N,3,H,W]")
@@ -109,7 +125,7 @@ class FlexivDualRGBDataset(BaseDataset):
                 raise ValueError("Zarr reward labels have not been validated for offline RL")
 
     def _make_sampler(self, episode_mask) -> SequenceSampler:
-        keys = list(CORE_KEYS)
+        keys = list(self.core_keys)
         if self.return_transitions:
             keys.extend(("reward", "done", "return"))
         return SequenceSampler(
@@ -155,7 +171,7 @@ class FlexivDualRGBDataset(BaseDataset):
             "agent_pos": sample["state"][:stop].astype(np.float32),
             **{
                 key: sample[key][:stop].astype(np.float32)
-                for key in IMAGE_KEYS
+                for key in self.image_keys
             },
         }
         result = {
@@ -169,7 +185,7 @@ class FlexivDualRGBDataset(BaseDataset):
                         "agent_pos": sample["state"][1 : stop + 1].astype(np.float32),
                         **{
                             key: sample[key][1 : stop + 1].astype(np.float32)
-                            for key in IMAGE_KEYS
+                            for key in self.image_keys
                         },
                     },
                     "next_action": sample["action"][1 : stop + 1].astype(np.float32),
@@ -184,13 +200,13 @@ class FlexivDualRGBDataset(BaseDataset):
         sample = self.sampler.sample_sequence(0)
         return {
             "obs": {
-                "agent_pos": (n_obs_steps, 26),
+                "agent_pos": (n_obs_steps, self.state_dim),
                 **{
                     key: (n_obs_steps, *sample[key].shape[1:])
-                    for key in IMAGE_KEYS
+                    for key in self.image_keys
                 },
             },
-            "action": (n_action_steps, 24),
+            "action": (n_action_steps, self.action_dim),
         }
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:

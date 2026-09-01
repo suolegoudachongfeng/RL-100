@@ -40,6 +40,29 @@ def _dataset(path, *, with_rewards=False):
     return root
 
 
+def _right_dataset(path):
+    root = zarr.group(store=zarr.DirectoryStore(str(path)), overwrite=True)
+    root.attrs.update(
+        {
+            "schema_id": "flexiv_rl100_right_dp_rgb_v1",
+            "profile": "right_joint_proprio_cartesian_v1",
+            "fps": 30.0,
+            "image_layout": "CHW",
+            "offline_rl_ready": False,
+        }
+    )
+    data = root.create_group("data")
+    meta = root.create_group("meta")
+    data.array("state", np.random.randn(12, 13).astype(np.float32))
+    action = np.random.randn(12, 12).astype(np.float32)
+    action[:, 6:12] = np.random.rand(12, 6)
+    data.array("action", action)
+    for key in ("rgb_head", "rgb_right_wrist"):
+        data.array(key, np.zeros((12, 3, 12, 16), dtype=np.uint8))
+    meta.array("episode_ends", np.asarray([12], dtype=np.int64))
+    return root
+
+
 def test_bc_dataset_reads_core_arrays_lazily(tmp_path):
     path = tmp_path / "demo.zarr"
     _dataset(path)
@@ -59,6 +82,27 @@ def test_bc_dataset_reads_core_arrays_lazily(tmp_path):
     assert sample["action"].shape == (9, 24)
     assert "next_obs" not in sample
     assert dataset.replay_buffer.backend == "zarr"
+
+
+def test_right_profile_reads_13d_12d_and_two_images(tmp_path):
+    path = tmp_path / "right.zarr"
+    _right_dataset(path)
+
+    dataset = FlexivDualRGBDataset(
+        path,
+        profile="right_joint_proprio_cartesian_v1",
+        horizon=9,
+        pad_before=1,
+        pad_after=7,
+        val_ratio=0.0,
+    )
+    sample = dataset[0]
+    report = validate_zarr(path)
+
+    assert sample["obs"]["agent_pos"].shape == (9, 13)
+    assert set(sample["obs"]) == {"agent_pos", "rgb_head", "rgb_right_wrist"}
+    assert sample["action"].shape == (9, 12)
+    assert report["profile"] == "right_joint_proprio_cartesian_v1"
 
 
 def test_offline_rl_mode_rejects_unlabelled_demonstrations(tmp_path):
