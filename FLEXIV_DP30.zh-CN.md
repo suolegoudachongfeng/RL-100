@@ -91,26 +91,6 @@ python -m rl_100.real_world.flexiv_dp30 validate \
 后者要求存在 `reward`、`done`、`return` 且 `offline_rl_ready=true`；普通示教 Zarr
 会按设计失败。
 
-建议在正式训练前做一次加载冒烟测试：
-
-```bash
-python - <<'PY'
-from rl_100.dataset.flexiv_dual_rgb_dataset import FlexivDualRGBDataset
-
-dataset = FlexivDualRGBDataset(
-    "/absolute/path/to/joint_proprio_cartesian_v1.zarr",
-    horizon=9,
-    pad_before=1,
-    pad_after=7,
-)
-sample = dataset[0]
-print(len(dataset), sample["obs"]["agent_pos"].shape, sample["action"].shape)
-PY
-```
-
-预期单样本状态为 `[9,26]`，动作为 `[9,24]`。训练时 policy 会根据
-`n_obs_steps=2` 和 `n_action_steps=8` 使用所需部分。
-
 ## 5. 2D DP 行为克隆
 
 在仓库内层目录运行：
@@ -141,9 +121,7 @@ data/outputs/flexiv_dual_rgb_dp30/YYYY.MM.DD/HH.MM.SS/
 ```
 
 其中 `checkpoints/latest.ckpt` 包含配置、模型、EMA 和 normalizer，可供本文件后续
-命令直接加载；`bc_final/` 是最终策略自身的保存目录。首次正式训练前，可用命令行
-覆盖 `training.num_epochs=1 training.max_train_steps=2 dataloader.num_workers=0`
-做小规模冒烟测试。
+命令直接加载；`bc_final/` 是最终策略自身的保存目录。
 
 ## 6. checkpoint 离线回放
 
@@ -162,29 +140,38 @@ python -m rl_100.real_world.flexiv_dp30 replay \
 指标，不等价于任务成功率。命令还会拒绝 NaN/Inf、非 `[N,24]` 输出和越界的
 `[0,1]` 手目标。
 
-## 7. RPC 影子模式
+## 7. 真机部署
 
-硬件端在采集仓启动只读 server。为避免自动 Home，第一次只做影子验证时使用：
+不需要启动 Quest、MANUS 或数采桥。第一个终端启动采集仓的唯一硬件 server；该命令
+自动完成 Reset、F/T 清零、Home 和双手复位：
 
 ```bash
 cd /home/hb/chp_ws/rl100_dp30/isaac_teleop_flexiv_inspire
 source scripts/env/activate_ros.sh
-robot --config config/site_rl100_dp30.yaml policy-serve --no-reset
+robot --config config/site.yaml policy-serve
 ```
 
-RL-100 端默认 `live` 不发送任何动作：
+Home 完成并显示 Policy RPC 已就绪后，再摆放与示教一致的物体。第二个终端运行：
 
 ```bash
+source /home/hb/miniconda3/etc/profile.d/conda.sh
+conda activate RL100
+cd /home/hb/chp_ws/rl100_dp30/RL-100/RL-100
+export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+
 python -m rl_100.real_world.flexiv_dp30 live \
-  --checkpoint /absolute/path/to/checkpoints/latest.ckpt \
+  --checkpoint /home/hb/chp_ws/rl100_dp30/models/open_boxes_dp30_20260831/latest.ckpt \
   --target 127.0.0.1:50051 \
-  --insecure-loopback \
-  --max-ticks 300
+  --server-ca /home/hb/chp_ws/rl100_dp30/isaac_teleop_flexiv_inspire/certs/server.crt \
+  --device cuda:0 \
+  --execute \
+  --confirm FLEXIV-RL100-EXECUTE \
+  --max-ticks 1800
 ```
 
-影子模式仍严格检查 RPC schema、session、状态/手/图像新鲜度和三路图像 shape，
-但不会申请控制 lease，也不会发 action。非 loopback 必须使用 server CA；如 server
-要求双向 TLS，还要提供 client certificate 和 key。
+运行第二条命令前按住中踏板；模型加载后开始动作。`1800` tick 是 60 秒，改成 `0`
+可持续运行。停止时先松开中踏板使机器人 hold，再按 `Ctrl-C`。本地 RPC 同样使用
+TLS，不要加 `--insecure-loopback`。
 
 ## 8. 真实执行安全门
 
@@ -203,8 +190,8 @@ python -m rl_100.real_world.flexiv_dp30 live \
 - 双臂/双手状态健康，动作有限，Rotation-6D 可构造，手目标在范围内；
 - 断连、超时、踏板释放或客户端退出立即 hold。
 
-在完成方向、坐标系、单位和限幅验收前不要使用上述执行参数。验收顺序应为：影子
-稳定运行 -> 单臂微小平移 -> 单臂微小旋转 -> 双臂 -> 双手 -> 动作块 -> 故障注入。
+正式 `site.yaml` 已要求中踏板并启用软件动作限幅。工作区必须清空并有人持续看护；
+出现异常时先松开中踏板，再停止进程。
 
 ## 9. 离线 RL 与在线 RL 的真实边界
 
