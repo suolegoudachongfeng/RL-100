@@ -1,4 +1,3 @@
-import copy
 import torch
 from torch.nn.modules.batchnorm import _BatchNorm
 
@@ -82,6 +81,16 @@ class EMAModel:
                 else:
                     ema_param.mul_(self.decay)
                     ema_param.add_(param.data.to(dtype=ema_param.dtype), alpha=1 - self.decay)
+
+            # BatchNorm running statistics and other registered buffers are
+            # state, not parameters, so they must be copied explicitly.
+            for buffer, ema_buffer in zip(
+                module.buffers(recurse=False),
+                ema_module.buffers(recurse=False),
+            ):
+                ema_buffer.copy_(
+                    buffer.to(device=ema_buffer.device, dtype=ema_buffer.dtype)
+                )
 
         # verify that iterating over module and then parameters is identical to parameters recursively.
         # assert old_all_dataptrs == all_dataptrs
